@@ -6,6 +6,13 @@ import { spawnCapture } from "./spawnCapture.js";
 // Container startup isn't the player's fault; give docker runs extra headroom.
 const DOCKER_STARTUP_GRACE_MS = 5000;
 
+// The local runner executes player code as a bare host subprocess — no
+// network/filesystem/memory isolation, just a kill timeout. That's fine for
+// solo local play but is arbitrary code execution if this server ever faces
+// real, untrusted opponents. It's opt-in on purpose: set
+// ALLOW_UNSANDBOXED_EXECUTION=true only when you understand and accept that.
+const ALLOW_UNSANDBOXED_EXECUTION = process.env.ALLOW_UNSANDBOXED_EXECUTION === "true";
+
 let runnerMode = null; // "docker" | "local" | "none"
 let pythonCommand = "python";
 let detectPromise = null;
@@ -15,18 +22,29 @@ export function currentRunnerMode() {
 }
 
 // Picks the best available runner once per process:
-// docker (daemon up, image present or pullable) → host python → none.
+// docker (daemon up, image present or pullable) → host python (opt-in only) → none.
+// Fails closed: without Docker and without the explicit opt-in env var, no
+// code executes at all rather than silently downgrading to an unsandboxed subprocess.
 export function detectRunner() {
   if (!detectPromise) {
     detectPromise = (async () => {
       if (await dockerReady()) {
         runnerMode = "docker";
         console.log(`[execution] using Docker sandbox (${DOCKER_IMAGE})`);
+      } else if (!ALLOW_UNSANDBOXED_EXECUTION) {
+        runnerMode = "none";
+        console.error(
+          "[execution] Docker is unavailable, so code execution is disabled. " +
+            "Start Docker Desktop, or — for solo local testing ONLY, never on a " +
+            "server reachable by others — set ALLOW_UNSANDBOXED_EXECUTION=true to " +
+            "run player code as a bare host subprocess instead."
+        );
       } else if (await pythonReady()) {
         runnerMode = "local";
         console.warn(
-          "[execution] Docker unavailable — falling back to host Python subprocess. " +
-            "Fine for local play; start Docker Desktop to get container isolation."
+          "[execution] ALLOW_UNSANDBOXED_EXECUTION=true — running player code as a " +
+            "host subprocess with NO sandboxing (no network/filesystem/memory " +
+            "isolation). Local solo play only."
         );
       } else {
         runnerMode = "none";
@@ -79,7 +97,15 @@ export async function runPython({ code, functionName, tests, timeoutMs = 10000 }
   if (runnerMode === "docker") {
     raw = await runDocker({ source, timeoutMs: timeoutMs + DOCKER_STARTUP_GRACE_MS });
     if (looksLikeDockerFailure(raw, token)) {
-      console.warn("[execution] docker run failed, switching to local runner:", tail(raw.stderr, 200));
+      if (!ALLOW_UNSANDBOXED_EXECUTION) {
+        console.error(
+          "[execution] docker run failed mid-match and ALLOW_UNSANDBOXED_EXECUTION is not set — refusing to fall back to unsandboxed execution:",
+          tail(raw.stderr, 200)
+        );
+        runnerMode = "none";
+        return failure("error", tests.length, "Execution sandbox unavailable — Docker failed");
+      }
+      console.warn("[execution] docker run failed, switching to unsandboxed local runner:", tail(raw.stderr, 200));
       runnerMode = "local";
       if (!(await pythonReady())) {
         runnerMode = "none";

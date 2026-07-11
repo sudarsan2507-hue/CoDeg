@@ -5,7 +5,12 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { spawnCapture } from "./spawnCapture.js";
 
-export const DOCKER_IMAGE = "python:3.12-alpine";
+// Pinned to a specific version+base tag rather than the floating "3.12-alpine"
+// so the sandbox doesn't silently change under us. Override via env for
+// operators who want to pin an exact sha256 digest in production, e.g.
+// CODEG_DOCKER_IMAGE=python@sha256:<digest> (get it with
+// `docker inspect --format='{{index .RepoDigests 0}}' python:3.12.7-alpine3.20`).
+export const DOCKER_IMAGE = process.env.CODEG_DOCKER_IMAGE || "python:3.12.7-alpine3.20";
 
 // Primary runner: executes the harness inside a locked-down container.
 // No network, capped memory/CPU/pids, read-only filesystem, dropped caps.
@@ -25,6 +30,9 @@ export async function runDocker({ source, timeoutMs }) {
     "--cpus", "1",
     "--pids-limit", "64",
     "--read-only",
+    // Scratch space some stdlib calls expect (e.g. tempfile); ephemeral,
+    // capped, and noexec so nothing written there can be run as a binary.
+    "--tmpfs", "/tmp:rw,size=16m,noexec,nosuid",
     "--cap-drop", "ALL",
     "--security-opt", "no-new-privileges",
     "-v", `${dir}:/code:ro`,

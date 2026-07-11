@@ -6,9 +6,13 @@
   "scripts": {
     "setup": "npm --prefix backend install && npm --prefix frontend install",
     "dev": "concurrently -n backend,frontend -c blue,magenta \"npm --prefix backend run dev\" \"npm --prefix frontend run dev\"",
+    "dev:unsandboxed": "concurrently -n backend,frontend -c blue,magenta \"npm --prefix backend run dev:unsandboxed\" \"npm --prefix frontend run dev\"",
     "build": "npm --prefix frontend run build",
     "start": "npm --prefix backend start",
-    "test:duel": "npm --prefix backend run test:duel"
+    "test:combat": "node --test shared/__tests__/combat.test.js",
+    "test:duel": "npm --prefix backend run test:duel",
+    "test:duel:unsandboxed": "npm --prefix backend run test:duel:unsandboxed",
+    "test": "npm run test:combat && npm run test:duel"
   },
   "devDependencies": {
     "concurrently": "^9.1.0"

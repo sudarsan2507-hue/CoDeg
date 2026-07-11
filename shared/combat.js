@@ -11,6 +11,14 @@ export const ROUND_BREAK_MS = 4000;
 export const SUBMIT_COOLDOWN_MS = 2000;
 export const MAX_CODE_LENGTH = 20000;
 
+// If neither fighter has landed a hit after TOTAL_ROUNDS, extra rounds are
+// played (cycling back through the problem set) until HP separates them.
+export const SUDDEN_DEATH_SECONDS = 90;
+
+// How long a disconnected fighter has to reconnect (same tab losing network,
+// or a page refresh) before the match is forfeited to their opponent.
+export const RECONNECT_GRACE_MS = 20000;
+
 // Damage multiplier from execution speed: refTimeMs / execTimeMs, clamped.
 export const SPEED = {
   MIN_MULT: 0.8,

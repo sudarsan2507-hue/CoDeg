@@ -2,9 +2,11 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import Editor from "@monaco-editor/react";
 import { socket } from "../lib/socket.js";
-import { duelStore } from "../lib/duelStore.js";
+import { duelStore, loadPendingDuel, clearPendingDuel } from "../lib/duelStore.js";
 import { EVENTS } from "../../../shared/protocol.js";
 import Arena from "../components/Arena.jsx";
+
+const REJOIN_TIMEOUT_MS = 8000;
 
 function formatClock(ms) {
   const total = Math.max(0, Math.ceil(ms / 1000));
@@ -15,24 +17,57 @@ function formatClock(ms) {
 
 export default function Duel() {
   const navigate = useNavigate();
-  const duel = duelStore.duel;
 
+  const [duel, setDuel] = useState(duelStore.duel);
+  const [reconnecting, setReconnecting] = useState(false);
   const [round, setRound] = useState(duelStore.round);
-  const [hp, setHp] = useState(() =>
-    duel ? { [duel.you.id]: duel.you.hp, [duel.opponent.id]: duel.opponent.hp } : {}
-  );
+  const [hp, setHp] = useState({});
   const [code, setCode] = useState(duelStore.round?.problem.starter ?? "");
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState(null);
   const [log, setLog] = useState([]);
   const [combatEvent, setCombatEvent] = useState(null);
   const [banner, setBanner] = useState(duel ? { kind: "vs", text: "GET READY" } : null);
+  const [opponentStatus, setOpponentStatus] = useState(null); // null | "disconnected"
   const [over, setOver] = useState(false);
   const [now, setNow] = useState(Date.now());
   const seqRef = useRef(0);
 
+  // Landed here with no live duel in memory — either a stray visit (send
+  // home) or a page refresh mid-match (try to rejoin using the token we
+  // stashed in sessionStorage before giving up).
   useEffect(() => {
-    if (!duel) navigate("/", { replace: true });
+    if (duel) return undefined;
+    const pending = loadPendingDuel();
+    if (!pending) {
+      navigate("/", { replace: true });
+      return undefined;
+    }
+
+    setReconnecting(true);
+    const onStart = (payload) => {
+      setDuel(payload);
+      setReconnecting(false);
+    };
+    const onRejected = () => {
+      setReconnecting(false);
+      navigate("/", { replace: true });
+    };
+    socket.on(EVENTS.DUEL_START, onStart);
+    socket.on(EVENTS.REJOIN_REJECTED, onRejected);
+    if (socket.connected) socket.emit(EVENTS.DUEL_REJOIN, pending);
+
+    const timeout = setTimeout(() => {
+      setReconnecting(false);
+      clearPendingDuel();
+      navigate("/", { replace: true });
+    }, REJOIN_TIMEOUT_MS);
+
+    return () => {
+      socket.off(EVENTS.DUEL_START, onStart);
+      socket.off(EVENTS.REJOIN_REJECTED, onRejected);
+      clearTimeout(timeout);
+    };
   }, [duel, navigate]);
 
   useEffect(() => {
@@ -40,21 +75,39 @@ export default function Duel() {
     return () => clearInterval(t);
   }, []);
 
+  // Main event wiring — re-bound whenever `duel` changes (initial mount and
+  // any later reconnect snapshot, since a reconnect gives this fighter a new
+  // socket id and every event below keys off `youId`).
   useEffect(() => {
-    if (!duel) return;
+    if (!duel) return undefined;
     const youId = duel.you.id;
     const oppName = duel.opponent.name;
+    setHp({ [duel.you.id]: duel.you.hp, [duel.opponent.id]: duel.opponent.hp });
+    setOpponentStatus(null);
+
     const addLog = (text, tone = "info") =>
       setLog((l) => [{ id: Date.now() + Math.random(), text, tone }, ...l].slice(0, 60));
+
+    const onDuelStart = (payload) => {
+      // A later duel:start for the SAME duel means our socket reconnected
+      // mid-match; refresh ids/HP without resetting the rest of the UI.
+      if (payload.duelId !== duel.duelId) return;
+      setDuel(payload);
+      setOpponentStatus(null);
+      addLog("Reconnected", "good");
+    };
 
     const onRoundStart = (payload) => {
       setRound(payload);
       setResult(null);
       setSubmitting(false);
       setCode(payload.problem.starter);
-      setBanner({ kind: "round", text: `ROUND ${payload.index + 1} — ${payload.problem.title}` });
+      const label = payload.suddenDeath ? "SUDDEN DEATH" : `ROUND ${payload.index + 1}`;
+      setBanner({ kind: "round", text: `${label} — ${payload.problem.title}` });
       setTimeout(() => setBanner(null), 2200);
-      addLog(`Round ${payload.index + 1}: ${payload.problem.title} (${payload.problem.difficulty})`);
+      addLog(
+        `${payload.suddenDeath ? "Sudden death" : `Round ${payload.index + 1}`}: ${payload.problem.title} (${payload.problem.difficulty})`
+      );
     };
 
     const onSubmitResult = (r) => {
@@ -92,8 +145,15 @@ export default function Duel() {
       }
     };
 
-    const onOpponent = ({ kind }) => {
+    const onOpponent = ({ kind, graceMs }) => {
       if (kind === "submitted") addLog(`${oppName} submitted code…`, "warn");
+      else if (kind === "disconnected") {
+        setOpponentStatus("disconnected");
+        addLog(`${oppName} disconnected — forfeits in ${Math.round((graceMs ?? 0) / 1000)}s if they don't return`, "warn");
+      } else if (kind === "reconnected") {
+        setOpponentStatus(null);
+        addLog(`${oppName} reconnected`, "good");
+      }
     };
 
     const onRoundEnd = ({ winnerName, reason }) => {
@@ -124,6 +184,7 @@ export default function Duel() {
       setTimeout(() => navigate("/result"), 2400);
     };
 
+    socket.on(EVENTS.DUEL_START, onDuelStart);
     socket.on(EVENTS.ROUND_START, onRoundStart);
     socket.on(EVENTS.SUBMIT_RESULT, onSubmitResult);
     socket.on(EVENTS.SUBMIT_REJECTED, onRejected);
@@ -132,6 +193,7 @@ export default function Duel() {
     socket.on(EVENTS.ROUND_END, onRoundEnd);
     socket.on(EVENTS.DUEL_END, onDuelEnd);
     return () => {
+      socket.off(EVENTS.DUEL_START, onDuelStart);
       socket.off(EVENTS.ROUND_START, onRoundStart);
       socket.off(EVENTS.SUBMIT_RESULT, onSubmitResult);
       socket.off(EVENTS.SUBMIT_REJECTED, onRejected);
@@ -142,7 +204,14 @@ export default function Duel() {
     };
   }, [duel, navigate]);
 
-  if (!duel) return null;
+  if (!duel) {
+    return reconnecting ? (
+      <section className="card">
+        <h1 className="title">Reconnecting…</h1>
+        <p className="subtitle">Rejoining your match — hang tight.</p>
+      </section>
+    ) : null;
+  }
 
   const youHp = hp[duel.you.id] ?? duel.maxHp;
   const oppHp = hp[duel.opponent.id] ?? duel.maxHp;
@@ -159,13 +228,21 @@ export default function Duel() {
     <section className="duel">
       <div className="round-bar panel">
         <span className="pill">
-          {round ? `Round ${round.index + 1}/${round.total}` : "Get ready"}
+          {round
+            ? round.suddenDeath
+              ? "Sudden Death"
+              : `Round ${round.index + 1}/${round.total}`
+            : "Get ready"}
         </span>
         <span className="round-title">{problem ? problem.title : "Waiting for the first round…"}</span>
         <span className={`timer ${remaining != null && remaining < 30000 ? "low" : ""}`}>
           {remaining != null ? formatClock(remaining) : "--:--"}
         </span>
       </div>
+
+      {opponentStatus === "disconnected" && (
+        <div className="panel reconnect-banner">{duel.opponent.name} disconnected — waiting for them to return…</div>
+      )}
 
       <div className="panel hp-panel">
         <div className="hp">

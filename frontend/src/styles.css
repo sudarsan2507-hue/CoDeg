@@ -207,6 +207,14 @@ a {
   font-weight: 700;
 }
 
+.reconnect-banner {
+  padding: 10px 20px;
+  font-size: 13px;
+  color: #fbbf24;
+  background: rgba(245, 158, 11, 0.1);
+  border-color: rgba(245, 158, 11, 0.4);
+}
+
 .timer.low {
   color: #f87171;
   animation: pulse 1s infinite;

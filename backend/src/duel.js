@@ -7,14 +7,18 @@ import {
   ROUND_BREAK_MS,
   SUBMIT_COOLDOWN_MS,
   MAX_CODE_LENGTH,
+  SUDDEN_DEATH_SECONDS,
+  RECONNECT_GRACE_MS,
   computeAttack
 } from "../../shared/combat.js";
 import { PROBLEMS, publicProblem } from "./problems.js";
 import { runPython, currentRunnerMode } from "../../execution-engine/index.js";
+import { appendMatch } from "./matchLog.js";
 
 // One live match. Flow (docs/mvp_plan.md):
 // join → match → problem → submit → execute → evaluate → damage → HP → winner.
-// First correct solution wins the round; three rounds or a KO end the duel.
+// First correct solution wins the round. After TOTAL_ROUNDS, a KO or an HP
+// lead ends it; a tie keeps playing sudden-death rounds until one does.
 export class Duel {
   constructor(players, onEnd) {
     this.id = randomUUID();
@@ -30,42 +34,77 @@ export class Duel {
         id: socket.id,
         socket,
         name,
+        token: randomUUID(), // lets this player's next socket reconnect into this duel
         hp: MAX_HP,
         lastMemoryKb: null,
         cooldownUntil: 0,
         inflight: false,
         damageDealt: 0,
-        bestTimeMs: null
+        bestTimeMs: null,
+        connected: true,
+        disconnectTimer: null
       });
     }
   }
 
   start() {
-    const [a, b] = [...this.fighters.values()];
-    for (const [me, other] of [[a, b], [b, a]]) {
-      me.socket.emit(EVENTS.DUEL_START, {
-        duelId: this.id,
-        you: { id: me.id, name: me.name, hp: me.hp },
-        opponent: { id: other.id, name: other.name, hp: other.hp },
-        maxHp: MAX_HP,
-        totalRounds: TOTAL_ROUNDS,
-        runnerMode: currentRunnerMode()
+    for (const fighter of this.fighters.values()) this.sendSnapshot(fighter);
+    this.timer = setTimeout(() => this.startRound(), COUNTDOWN_MS);
+  }
+
+  // Sends a full duel:start snapshot to one fighter — used on match start and
+  // again on reconnect, since the fighter's socket id (and therefore "you.id")
+  // changes across a reconnect.
+  sendSnapshot(fighter) {
+    const other = this.opponentOf(fighter);
+    fighter.socket.emit(EVENTS.DUEL_START, {
+      duelId: this.id,
+      you: { id: fighter.id, name: fighter.name, hp: fighter.hp, token: fighter.token },
+      opponent: { id: other.id, name: other.name, hp: other.hp },
+      maxHp: MAX_HP,
+      totalRounds: TOTAL_ROUNDS,
+      runnerMode: currentRunnerMode()
+    });
+    if (this.state === "active") {
+      const problem = this.problemForRound(this.roundIndex);
+      fighter.socket.emit(EVENTS.ROUND_START, {
+        index: this.roundIndex,
+        total: TOTAL_ROUNDS,
+        suddenDeath: this.roundIndex >= TOTAL_ROUNDS,
+        problem: publicProblem(problem, this.roundIndex),
+        endsAt: this.currentEndsAt
       });
     }
-    this.timer = setTimeout(() => this.startRound(), COUNTDOWN_MS);
+  }
+
+  // Round index >= TOTAL_ROUNDS is sudden death: cycle back through the
+  // problem set with a shorter timer so a tie resolves quickly.
+  problemForRound(index) {
+    return PROBLEMS[index % PROBLEMS.length];
+  }
+
+  roundSecondsFor(index, problem) {
+    return index >= TOTAL_ROUNDS ? SUDDEN_DEATH_SECONDS : problem.roundSeconds;
   }
 
   startRound() {
     this.roundIndex += 1;
     this.roundSeq += 1;
     this.state = "active";
-    const problem = PROBLEMS[this.roundIndex];
-    const endsAt = Date.now() + problem.roundSeconds * 1000;
+    // Sudden death: nobody has ever taken damage after the base rounds. Reset
+    // memory-based defense each round so it always reflects this round's
+    // code, not a stale or gamed reading from a previous submission.
+    for (const fighter of this.fighters.values()) fighter.lastMemoryKb = null;
+
+    const problem = this.problemForRound(this.roundIndex);
+    const seconds = this.roundSecondsFor(this.roundIndex, problem);
+    const endsAt = Date.now() + seconds * 1000;
     this.currentEndsAt = endsAt;
-    this.timer = setTimeout(() => this.timeoutRound(), problem.roundSeconds * 1000);
+    this.timer = setTimeout(() => this.timeoutRound(), seconds * 1000);
     this.emitAll(EVENTS.ROUND_START, {
       index: this.roundIndex,
       total: TOTAL_ROUNDS,
+      suddenDeath: this.roundIndex >= TOTAL_ROUNDS,
       problem: publicProblem(problem, this.roundIndex),
       endsAt
     });
@@ -90,7 +129,7 @@ export class Duel {
       return fighter.socket.emit(EVENTS.SUBMIT_REJECTED, { reason: "Cooldown — wait a moment" });
     }
 
-    const problem = PROBLEMS[this.roundIndex];
+    const problem = this.problemForRound(this.roundIndex);
     const seqAtSubmit = this.roundSeq;
     fighter.inflight = true;
     this.opponentOf(fighter).socket.emit(EVENTS.OPPONENT_EVENT, { kind: "submitted" });
@@ -113,8 +152,11 @@ export class Duel {
       return fighter.socket.emit(EVENTS.SUBMIT_RESULT, { ...result, late: true });
     }
 
-    if (result.memoryKb != null) fighter.lastMemoryKb = result.memoryKb;
+    // Only a PASSING run sets the defense reading. Letting failing runs set
+    // it would let a player game defense with a cheap, deliberately-wrong,
+    // low-memory submission before their opponent's attack resolves.
     if (result.verdict === "pass") {
+      fighter.lastMemoryKb = result.memoryKb;
       fighter.bestTimeMs =
         fighter.bestTimeMs == null ? result.execTimeMs : Math.min(fighter.bestTimeMs, result.execTimeMs);
     }
@@ -176,7 +218,7 @@ export class Duel {
     if (this.state !== "active") return;
     this.rounds.push({
       index: this.roundIndex,
-      title: PROBLEMS[this.roundIndex].title,
+      title: this.problemForRound(this.roundIndex).title,
       winnerId: null,
       winnerName: null,
       damage: 0,
@@ -196,10 +238,16 @@ export class Duel {
       reason
     });
 
-    const anyKo = [...this.fighters.values()].some((f) => f.hp <= 0);
-    if (anyKo || this.roundIndex >= TOTAL_ROUNDS - 1) {
-      this.finish(anyKo ? "ko" : "rounds");
+    const [a, b] = [...this.fighters.values()];
+    const anyKo = a.hp <= 0 || b.hp <= 0;
+    const decided = a.hp !== b.hp;
+    if (anyKo) {
+      this.finish("ko");
+    } else if (this.roundIndex >= TOTAL_ROUNDS - 1 && decided) {
+      this.finish("rounds");
     } else {
+      // Either still in the base rounds, or tied after them — sudden death
+      // keeps going (problemForRound cycles the set) until HP separates them.
       this.timer = setTimeout(() => this.startRound(), ROUND_BREAK_MS);
     }
   }
@@ -208,23 +256,55 @@ export class Duel {
     this.state = "ended";
     clearTimeout(this.timer);
     const [a, b] = [...this.fighters.values()];
-    let winner = null;
-    if (a.hp !== b.hp) winner = a.hp > b.hp ? a : b;
+    const winner = a.hp === b.hp ? null : a.hp > b.hp ? a : b;
     this.emitEnd(winner, winner ? reason : "draw");
   }
 
   handleDisconnect(socketId) {
     if (this.state === "ended") return;
-    this.state = "ended";
-    clearTimeout(this.timer);
-    this.roundSeq += 1;
-    const winner = [...this.fighters.values()].find((f) => f.id !== socketId) ?? null;
-    this.emitEnd(winner, "forfeit");
+    const fighter = this.fighters.get(socketId);
+    if (!fighter || !fighter.connected) return;
+
+    fighter.connected = false;
+    this.opponentOf(fighter).socket.emit(EVENTS.OPPONENT_EVENT, {
+      kind: "disconnected",
+      graceMs: RECONNECT_GRACE_MS
+    });
+    fighter.disconnectTimer = setTimeout(() => {
+      if (this.state === "ended") return;
+      this.state = "ended";
+      clearTimeout(this.timer);
+      this.roundSeq += 1;
+      const winner = [...this.fighters.values()].find((f) => f.id !== fighter.id) ?? null;
+      this.emitEnd(winner, "forfeit");
+    }, RECONNECT_GRACE_MS);
+  }
+
+  // Called by matchmaking when a fresh socket presents a valid reconnect
+  // token for this duel. Swaps the fighter's socket/id in place so the match
+  // (HP, round, timers) continues uninterrupted.
+  reconnect(token, newSocket) {
+    const oldId = [...this.fighters.entries()].find(([, f]) => f.token === token)?.[0];
+    if (!oldId || this.state === "ended") return null;
+
+    const fighter = this.fighters.get(oldId);
+    clearTimeout(fighter.disconnectTimer);
+    fighter.disconnectTimer = null;
+    fighter.connected = true;
+    fighter.socket = newSocket;
+    fighter.id = newSocket.id;
+    this.fighters.delete(oldId);
+    this.fighters.set(newSocket.id, fighter);
+
+    this.sendSnapshot(fighter);
+    this.opponentOf(fighter).socket.emit(EVENTS.OPPONENT_EVENT, { kind: "reconnected" });
+    return { oldId, newId: newSocket.id };
   }
 
   emitEnd(winner, reason) {
     const stats = {};
     for (const f of this.fighters.values()) {
+      clearTimeout(f.disconnectTimer);
       stats[f.id] = {
         name: f.name,
         hp: f.hp,
@@ -234,14 +314,16 @@ export class Duel {
         lastMemoryKb: f.lastMemoryKb
       };
     }
-    this.emitAll(EVENTS.DUEL_END, {
+    const summary = {
       winnerId: winner?.id ?? null,
       winnerName: winner?.name ?? null,
       reason,
       hp: this.hpSnapshot(),
       stats,
       rounds: this.rounds
-    });
+    };
+    this.emitAll(EVENTS.DUEL_END, summary);
+    appendMatch({ duelId: this.id, endedAt: new Date().toISOString(), ...summary });
     this.onEnd?.(this);
   }
 
@@ -256,6 +338,8 @@ export class Duel {
   }
 
   emitAll(event, payload) {
-    for (const f of this.fighters.values()) f.socket.emit(event, payload);
+    for (const f of this.fighters.values()) {
+      if (f.connected) f.socket.emit(event, payload);
+    }
   }
 }

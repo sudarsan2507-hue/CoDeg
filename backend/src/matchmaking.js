@@ -5,6 +5,7 @@ import { Duel } from "./duel.js";
 export function createMatchmaking() {
   let waiting = null; // { socket, name }
   const duelsBySocket = new Map();
+  const duelsById = new Map(); // survives a fighter's socket id changing on reconnect
 
   function join(socket, rawName) {
     if (duelsBySocket.has(socket.id)) {
@@ -24,7 +25,9 @@ export function createMatchmaking() {
     waiting = null;
     const duel = new Duel(players, (ended) => {
       for (const f of ended.fighters.values()) duelsBySocket.delete(f.id);
+      duelsById.delete(ended.id);
     });
+    duelsById.set(duel.id, duel);
     for (const p of players) duelsBySocket.set(p.socket.id, duel);
     duel.start();
   }
@@ -48,5 +51,20 @@ export function createMatchmaking() {
     duel.handleSubmit(socket.id, code);
   }
 
-  return { join, leave, disconnect, submit };
+  // A fresh socket (network blip or page refresh) presenting a duelId+token
+  // it remembers from before. Re-attaches it to the same live duel in place.
+  function rejoin(socket, duelId, token) {
+    const duel = duelsById.get(duelId);
+    if (!duel || typeof token !== "string") {
+      return socket.emit(EVENTS.REJOIN_REJECTED, { reason: "No such duel" });
+    }
+    const swap = duel.reconnect(token, socket);
+    if (!swap) {
+      return socket.emit(EVENTS.REJOIN_REJECTED, { reason: "Duel already ended or token invalid" });
+    }
+    duelsBySocket.delete(swap.oldId);
+    duelsBySocket.set(swap.newId, duel);
+  }
+
+  return { join, leave, disconnect, submit, rejoin };
 }

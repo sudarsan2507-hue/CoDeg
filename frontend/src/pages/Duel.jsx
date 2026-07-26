@@ -32,6 +32,9 @@ export default function Duel() {
   const [over, setOver] = useState(false);
   const [now, setNow] = useState(Date.now());
   const seqRef = useRef(0);
+  // Tracks which round the editor is currently showing, so a reconnect that
+  // re-emits round:start for the SAME round doesn't wipe the player's typed code.
+  const roundIndexRef = useRef(-1);
 
   // Landed here with no live duel in memory — either a stray visit (send
   // home) or a page refresh mid-match (try to rejoin using the token we
@@ -99,8 +102,12 @@ export default function Duel() {
 
     const onRoundStart = (payload) => {
       setRound(payload);
-      setResult(null);
       setSubmitting(false);
+      // A reconnect re-sends round:start for the round already in progress —
+      // keep the player's typed code and current UI instead of resetting.
+      if (payload.index === roundIndexRef.current) return;
+      roundIndexRef.current = payload.index;
+      setResult(null);
       setCode(payload.problem.starter);
       const label = payload.suddenDeath ? "SUDDEN DEATH" : `ROUND ${payload.index + 1}`;
       setBanner({ kind: "round", text: `${label} — ${payload.problem.title}` });

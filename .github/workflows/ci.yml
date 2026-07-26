@@ -1,0 +1,19 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  unit:
+    name: Unit tests (no Docker needed)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      # These suites stub the code runner, so they need neither npm deps,
+      # Docker, nor a Python install — just Node's built-in test runner.
+      - name: Combat + duel state-machine tests
+        run: node --test shared/__tests__/combat.test.js backend/src/__tests__/duel.test.js

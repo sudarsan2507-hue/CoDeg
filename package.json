@@ -10,9 +10,10 @@
     "build": "npm --prefix frontend run build",
     "start": "npm --prefix backend start",
     "test:combat": "node --test shared/__tests__/combat.test.js",
+    "test:unit": "node --test shared/__tests__/combat.test.js backend/src/__tests__/duel.test.js",
     "test:duel": "npm --prefix backend run test:duel",
     "test:duel:unsandboxed": "npm --prefix backend run test:duel:unsandboxed",
-    "test": "npm run test:combat && npm run test:duel"
+    "test": "npm run test:unit && npm run test:duel"
   },
   "devDependencies": {
     "concurrently": "^9.1.0"

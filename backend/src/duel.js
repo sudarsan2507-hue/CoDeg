@@ -30,6 +30,9 @@ export class Duel {
     this.roundSeq = 0; // bumped on every transition; stale evaluations are dropped
     this.timer = null;
     this.rounds = [];
+    // Combat events for the current round, replayed to a fighter on reconnect
+    // so a brief drop doesn't leave a hole in their combat log. Reset each round.
+    this.eventBuffer = [];
     this.fighters = new Map();
     for (const { socket, name } of players) {
       this.fighters.set(socket.id, {
@@ -76,6 +79,8 @@ export class Duel {
         problem: publicProblem(problem, this.roundIndex),
         endsAt: this.currentEndsAt
       });
+      // Catch the returning fighter up on combat they missed while away.
+      for (const buffered of this.eventBuffer) fighter.socket.emit(EVENTS.COMBAT_EVENT, buffered);
     }
   }
 
@@ -93,6 +98,7 @@ export class Duel {
     this.roundIndex += 1;
     this.roundSeq += 1;
     this.state = "active";
+    this.eventBuffer = [];
     // NOTE: memory-based defense (fighter.lastMemoryKb) deliberately CARRIES
     // across rounds. The first passing submission ends the round instantly, so
     // the defender almost never has a reading from the current round — resetting
@@ -170,7 +176,7 @@ export class Duel {
     if (result.verdict === "pass") {
       this.resolveHit(fighter, result, problem);
     } else {
-      this.emitAll(EVENTS.COMBAT_EVENT, {
+      this.broadcastCombat({
         attackerId: fighter.id,
         targetId: this.opponentOf(fighter).id,
         style: "miss",
@@ -181,6 +187,14 @@ export class Duel {
         hp: this.hpSnapshot()
       });
     }
+  }
+
+  // Emits a combat event to both fighters AND records it for the current round
+  // so a fighter who reconnects mid-round is replayed the hits they missed.
+  broadcastCombat(payload) {
+    this.eventBuffer.push(payload);
+    if (this.eventBuffer.length > 40) this.eventBuffer.shift();
+    this.emitAll(EVENTS.COMBAT_EVENT, payload);
   }
 
   resolveHit(fighter, result, problem) {
@@ -194,7 +208,7 @@ export class Duel {
     target.hp = Math.max(0, target.hp - attack.damage);
     fighter.damageDealt += attack.damage;
 
-    this.emitAll(EVENTS.COMBAT_EVENT, {
+    this.broadcastCombat({
       attackerId: fighter.id,
       targetId: target.id,
       style: attack.style,

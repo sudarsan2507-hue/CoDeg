@@ -93,10 +93,13 @@ export class Duel {
     this.roundIndex += 1;
     this.roundSeq += 1;
     this.state = "active";
-    // Sudden death: nobody has ever taken damage after the base rounds. Reset
-    // memory-based defense each round so it always reflects this round's
-    // code, not a stale or gamed reading from a previous submission.
-    for (const fighter of this.fighters.values()) fighter.lastMemoryKb = null;
+    // NOTE: memory-based defense (fighter.lastMemoryKb) deliberately CARRIES
+    // across rounds. The first passing submission ends the round instantly, so
+    // the defender almost never has a reading from the current round — resetting
+    // it each round made the whole defense mechanic dead in real matches. Instead
+    // it's standing "armor" earned from your most recent passing solution's
+    // memory efficiency (only passing runs set it, so it can't be gamed with a
+    // deliberately-wrong low-memory submission). No reading yet → no defense.
 
     const problem = this.problemForRound(this.roundIndex);
     const seconds = this.roundSecondsFor(this.roundIndex, problem);

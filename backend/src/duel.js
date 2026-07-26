@@ -12,7 +12,7 @@ import {
   computeAttack
 } from "../../shared/combat.js";
 import { PROBLEMS, publicProblem } from "./problems.js";
-import { runPython, currentRunnerMode } from "../../execution-engine/index.js";
+import { runPython as defaultRunPython, currentRunnerMode } from "../../execution-engine/index.js";
 import { appendMatch } from "./matchLog.js";
 
 // One live match. Flow (docs/mvp_plan.md):
@@ -20,9 +20,11 @@ import { appendMatch } from "./matchLog.js";
 // First correct solution wins the round. After TOTAL_ROUNDS, a KO or an HP
 // lead ends it; a tie keeps playing sudden-death rounds until one does.
 export class Duel {
-  constructor(players, onEnd) {
+  constructor(players, onEnd, options = {}) {
     this.id = randomUUID();
     this.onEnd = onEnd;
+    // Injectable so the state machine can be unit-tested without Docker/Python.
+    this.runPython = options.runPython ?? defaultRunPython;
     this.state = "countdown"; // countdown | active | break | ended
     this.roundIndex = -1;
     this.roundSeq = 0; // bumped on every transition; stale evaluations are dropped
@@ -136,7 +138,7 @@ export class Duel {
 
     let result;
     try {
-      result = await runPython({
+      result = await this.runPython({
         code,
         functionName: problem.functionName,
         tests: problem.tests,

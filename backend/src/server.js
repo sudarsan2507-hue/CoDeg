@@ -19,6 +19,19 @@ const DIST_DIR = path.resolve(__dirname, "../../frontend/dist");
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || "http://localhost:5173";
 const corsOrigin = ALLOWED_ORIGIN === "*" ? true : ALLOWED_ORIGIN.split(",").map((o) => o.trim());
 
+// Behind a reverse proxy every socket reports the proxy's IP, so per-IP limits
+// would throttle all users together. Set TRUST_PROXY=true to key off the first
+// X-Forwarded-For hop instead. Leave it off when directly exposed (the header
+// is client-spoofable, so only trust it when a proxy you control sets it).
+const TRUST_PROXY = process.env.TRUST_PROXY === "true";
+function clientIp(socket) {
+  if (TRUST_PROXY) {
+    const fwd = socket.handshake.headers["x-forwarded-for"];
+    if (fwd) return String(fwd).split(",")[0].trim();
+  }
+  return socket.handshake.address;
+}
+
 // Connections and queue joins are cheap to spam; cap both per IP.
 const connectLimiter = createRateLimiter({ windowMs: 60_000, max: 30 });
 const joinLimiter = createRateLimiter({ windowMs: 10_000, max: 5 });
@@ -43,15 +56,14 @@ export function createServer() {
   const matchmaking = createMatchmaking();
 
   io.use((socket, next) => {
-    const ip = socket.handshake.address;
-    if (!connectLimiter.allow(ip)) {
+    if (!connectLimiter.allow(clientIp(socket))) {
       return next(new Error("rate_limited"));
     }
     next();
   });
 
   io.on("connection", (socket) => {
-    const ip = socket.handshake.address;
+    const ip = clientIp(socket);
     socket.on(EVENTS.QUEUE_JOIN, (payload) => {
       if (!joinLimiter.allow(ip)) {
         return socket.emit(EVENTS.QUEUE_STATUS, { error: "Too many attempts — slow down" });

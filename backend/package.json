@@ -8,6 +8,7 @@
     "dev:unsandboxed": "node --watch scripts/run-unsandboxed.js",
     "start": "node src/index.js",
     "start:unsandboxed": "node scripts/run-unsandboxed.js",
+    "test": "node --test src/__tests__/",
     "test:duel": "node scripts/e2e-duel.js",
     "test:duel:unsandboxed": "node scripts/e2e-duel-unsandboxed.js"
   },

@@ -59,7 +59,7 @@ start to finish. Breakdown by area:
 - [x] Combat unit tests (`shared/__tests__/combat.test.js`).
 - [x] End-to-end duel test (`backend/scripts/e2e-duel.js`) — real server, two
       clients, full 3-round match with real Python execution.
-- [x] Docs: `README.md`, `CLAUDE.md`, `docs/architecture.md`, `docs/mvp_plan.md`.
+- [x] Docs: `README.md`, `loud.md`, `docs/architecture.md`, `docs/mvp_plan.md`.
 
 ---
 

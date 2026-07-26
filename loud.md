@@ -1,4 +1,4 @@
-# CoDeg — Claude notes
+# CoDeg — Dev notes
 
 Real-time 1v1 coding duel: both players get the same Python problem; the first
 correct solution attacks. Speed scales damage, low memory grants defense.
@@ -26,4 +26,4 @@ no ranking, no replays, Python only) unless the user says otherwise.
 ## Conventions
 
 - Plain JS (ESM) everywhere, no TypeScript; double quotes, 2-space indent
-- The user commits their own work — **never git commit and never add Claude attribution/Co-Authored-By**
+- The user commits their own work — **never git commit and never add authoring attribution/Co-Authored-By trailers**

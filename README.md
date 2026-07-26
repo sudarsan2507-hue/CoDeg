@@ -38,9 +38,13 @@ Open http://localhost:5173 in **two browser tabs**, enter names, hit
 | Too slow / crash   | Timeout or error — attack fails                 |
 
 Fast solves play a *rapid* strike animation, slow ones a *heavy* hit. Defense
-is read fresh from each round's own **passing** submission only — it resets
-every round and a failing submission can't be used to plant a cheap defensive
-reading before your opponent's attack resolves.
+is standing **armor** earned from your most recent **passing** submission's
+memory efficiency, carried forward across rounds (only passing runs set it, so
+a deliberately-wrong low-memory submission can't game it). Since the first
+correct solution ends the round immediately, this is what lets lean code
+actually block a later incoming attack — you haven't usually solved the
+*current* round when your opponent's hit lands. No passing solution yet → no
+defense.
 
 If both fighters are still tied on HP after the 3 base rounds, the duel goes
 to **sudden death**: extra rounds (cycling back through the problem set, 90s

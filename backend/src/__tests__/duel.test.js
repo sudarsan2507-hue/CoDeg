@@ -77,6 +77,63 @@ test("a failing submission registers a miss and keeps the round active", async (
   clearTimeout(duel.timer);
 });
 
+// Regression guard for the "dead defense mechanic" bug: memory-based defense
+// must carry across rounds, because the first solve ends the round instantly
+// and the defender rarely has a same-round reading.
+test("memory defense carries across rounds", async () => {
+  const a = fakeSocket("A");
+  const b = fakeSocket("B");
+  let next = null;
+  const duel = new Duel(
+    [
+      { socket: a, name: "Alice" },
+      { socket: b, name: "Bob" }
+    ],
+    null,
+    { runPython: async () => next }
+  );
+
+  // Round 0: Alice solves with lean memory — earns standing armor.
+  duel.startRound();
+  next = { verdict: "pass", passed: 7, total: 7, execTimeMs: 5, memoryKb: 64, tests: [] };
+  await duel.handleSubmit("A", "solve");
+  clearTimeout(duel.timer);
+  assert.equal(duel.fighters.get("A").lastMemoryKb, 64);
+
+  // Round 1: Bob attacks Alice — her carried 64KB reading must reduce the hit.
+  duel.startRound();
+  next = { verdict: "pass", passed: 7, total: 7, execTimeMs: 25, memoryKb: 5000, tests: [] };
+  await duel.handleSubmit("B", "solve");
+  const combat = b.last(EVENTS.COMBAT_EVENT);
+  assert.equal(combat.attackerId, "B");
+  assert.ok(combat.defense > 0, "Alice's carried lean memory grants defense");
+  clearTimeout(duel.timer);
+});
+
+test("an evaluation that finishes after the round advanced is marked late and deals no damage", async () => {
+  const a = fakeSocket("A");
+  const b = fakeSocket("B");
+  let resolveRun;
+  const duel = new Duel(
+    [
+      { socket: a, name: "Alice" },
+      { socket: b, name: "Bob" }
+    ],
+    null,
+    { runPython: () => new Promise((r) => (resolveRun = r)) }
+  );
+
+  duel.startRound();
+  const pending = duel.handleSubmit("A", "solve");
+  duel.roundSeq += 1; // the round advances while the evaluation is in flight
+  resolveRun(PASS);
+  await pending;
+
+  assert.equal(a.last(EVENTS.SUBMIT_RESULT).late, true);
+  assert.equal(a.last(EVENTS.COMBAT_EVENT), undefined, "a late result deals no damage");
+  clearTimeout(duel.timer);
+});
+
 test("timeoutRound records a stalemate round with no winner", () => {
   const { duel } = makeDuel(PASS);
   duel.startRound();
@@ -84,5 +141,23 @@ test("timeoutRound records a stalemate round with no winner", () => {
   duel.timeoutRound();
   assert.equal(duel.rounds.length, 1);
   assert.equal(duel.rounds[0].winnerId, null);
+  clearTimeout(duel.timer);
+});
+
+test("reconnect swaps a fighter's socket in place without ending the duel", () => {
+  const { duel, b } = makeDuel(PASS);
+  duel.startRound();
+  const token = duel.fighters.get("A").token;
+
+  duel.handleDisconnect("A");
+  assert.equal(duel.fighters.get("A").connected, false);
+  assert.equal(b.last(EVENTS.OPPONENT_EVENT).kind, "disconnected");
+
+  const a2 = fakeSocket("A2");
+  const swap = duel.reconnect(token, a2);
+  assert.deepEqual(swap, { oldId: "A", newId: "A2" });
+  assert.ok(duel.fighters.get("A2")?.connected, "the new socket is attached and live");
+  assert.equal(duel.fighters.has("A"), false, "the old socket id is gone");
+  assert.equal(b.last(EVENTS.OPPONENT_EVENT).kind, "reconnected");
   clearTimeout(duel.timer);
 });

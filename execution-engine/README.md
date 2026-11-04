@@ -7,7 +7,7 @@ metrics that the combat system consumes.
 
 1. `harness.js` builds a single Python file: player code + a test loop.
    Per test it records wall time (`time.perf_counter`) and peak memory
-   (`tracemalloc`), then prints one line prefixed with a random token —
+   (`tracemalloc`), then prints one line prefixed with a random token - 
    player `print()` output can't spoof the result.
 2. A runner executes that file:
    - **Docker** (the only runner enabled by default): a pinned version+base
@@ -16,12 +16,12 @@ metrics that the combat system consumes.
      plus a small `noexec` tmpfs `/tmp`, all capabilities dropped. The
      container is force-removed on timeout.
    - **Local fallback**: host `python -I` subprocess with a hard kill
-     timeout and **no other isolation** — no network/filesystem/memory
+     timeout and **no other isolation** - no network/filesystem/memory
      restriction. This is arbitrary code execution on the host. It only runs
      if you explicitly set `ALLOW_UNSANDBOXED_EXECUTION=true`; without Docker
      and without that flag, `runPython` refuses to execute anything at all
      (fails closed) rather than silently downgrading. Use it for solo local
-     play only — never on a server anyone else can reach.
+     play only - never on a server anyone else can reach.
 3. `index.js` parses the token line into an evaluation:
    `{ verdict, passed, total, execTimeMs, memoryKb, tests[] }`.
 
